@@ -61,6 +61,18 @@
           - /robots.txt
           - /.well-known/security.txt
 
+        # === 协议能力探测 ===
+        # 只做一次裸 TLS 握手（不发任何 HTTP 载荷），用于判定 HTTP/2 over TLS
+        # 是否可用，并记录协商到的协议版本与证书事实。这是「仅 HTTP/2 可触发」
+        # 类 CVE（如 CVE-2023-44487）的排除依据——判读时会据此直接排除。
+        tlsProbe: true
+
+        # === 并行探测并发上限 ===
+        # 根请求之后的 OPTIONS / 错误页 / 各被动路径 / TLS 握手是彼此独立的，
+        # 会并发执行；本项控制同时最多打几个连接。设为 1 即退回串行。
+        # 内网站点或前置 WAF 的站点建议调小。上限 32。
+        probeConcurrency: 6
+
         # === 载荷黑名单：命中即拦截。如需放宽，请在此处覆写整个列表 ===
         # 注意 patch 会整体替换该行的 config，覆写时请把上面的键一并重述。
         # blockedPayloadPatterns:

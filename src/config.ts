@@ -74,6 +74,17 @@ export interface CvescoutConfig {
   errorPageProbe: boolean
   /** 指纹识别时额外探测的被动路径（只取 200 响应，不写入任何内容）。 */
   passiveProbePaths: string[]
+  /**
+   * 是否做 TLS / ALPN 探测。只做一次裸握手、不发任何 HTTP 载荷，
+   * 用于判定 HTTP/2 over TLS 是否可用，并记录协商出的协议版本与证书事实。
+   */
+  tlsProbe: boolean
+  /**
+   * 单次指纹识别中并行探测的并发上限。
+   * 调大可缩短扫描耗时，但会同时对目标发起更多连接——内网站点或带 WAF 的
+   * 站点建议保守设置。上限 32。
+   */
+  probeConcurrency: number
 }
 
 export const Config: Schema<CvescoutConfig> = Schema.object({
@@ -96,6 +107,8 @@ export const Config: Schema<CvescoutConfig> = Schema.object({
   probeAllowedMethods: Schema.boolean().default(true),
   errorPageProbe: Schema.boolean().default(true),
   passiveProbePaths: Schema.array(Schema.string()).default([...DEFAULT_PASSIVE_PATHS]),
+  tlsProbe: Schema.boolean().default(true),
+  probeConcurrency: Schema.number().default(6),
 })
 
 function numberOr(value: unknown, fallback: number): number {
@@ -157,5 +170,7 @@ export function resolveConfig(input?: Partial<CvescoutConfig> | null): CvescoutC
     probeAllowedMethods: booleanOr(raw.probeAllowedMethods, true),
     errorPageProbe: booleanOr(raw.errorPageProbe, true),
     passiveProbePaths: stringArrayOr(raw.passiveProbePaths, DEFAULT_PASSIVE_PATHS),
+    tlsProbe: booleanOr(raw.tlsProbe, true),
+    probeConcurrency: Math.max(1, Math.min(32, Math.round(numberOr(raw.probeConcurrency, 6)))),
   }
 }

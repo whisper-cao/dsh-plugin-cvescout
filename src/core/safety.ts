@@ -30,16 +30,40 @@ const MAX_AUDIT_ENTRIES = 500
 export interface SafetyDecision {
   allowed: boolean
   reason: string
+  /**
+   * 拒绝类别。
+   *
+   * 区分它的原因是：并行探测时这两类拒绝该有不同处置——
+   * `scope` 是「目标未授权」，必须硬失败并向上冒泡（不能被降级成「不可达」）；
+   * `rate-limit` / `total-limit` 只是本地配额，应当如实记进 probeErrors
+   * 并保留已采到的部分情报，而不是丢掉整次扫描。
+   */
+  kind: SafetyDecisionKind
 }
+
+export type SafetyDecisionKind =
+  | 'ok'
+  | 'blocked-tool'
+  | 'blocked-pattern'
+  | 'scope'
+  | 'rate-limit'
+  | 'total-limit'
 
 /** 安全护栏拒绝调用时抛出的专用错误，便于调用方与网络错误区分开。 */
 export class SafetyBlockedError extends Error {
   readonly toolName: string
+  readonly kind: SafetyDecisionKind
 
-  constructor(toolName: string, reason: string) {
+  constructor(toolName: string, reason: string, kind: SafetyDecisionKind = 'scope') {
     super(`安全护栏拦截 [${toolName}]: ${reason}`)
     this.name = 'SafetyBlockedError'
     this.toolName = toolName
+    this.kind = kind
+  }
+
+  /** 是否为「目标未授权」——这类拒绝必须硬失败，不允许被静默降级。 */
+  get isScopeViolation(): boolean {
+    return this.kind === 'scope'
   }
 }
 
@@ -99,23 +123,27 @@ export class SafetyGuard {
   assertAllowed(toolName: string, params: unknown): void {
     const decision = this.check(toolName, params)
     if (!decision.allowed) {
-      throw new SafetyBlockedError(toolName, decision.reason)
+      throw new SafetyBlockedError(toolName, decision.reason, decision.kind)
     }
   }
 
   private evaluate(toolName: string, params: unknown): SafetyDecision {
     if (BLOCKED_TOOL_NAMES.includes(toolName)) {
-      return { allowed: false, reason: `工具 ${toolName} 属破坏性操作，已被拦截` }
+      return {
+        allowed: false,
+        kind: 'blocked-tool',
+        reason: `工具 ${toolName} 属破坏性操作，已被拦截`,
+      }
     }
 
     const payloadHit = this.matchBlockedPattern(params)
     if (payloadHit) {
-      return { allowed: false, reason: `参数包含禁止模式: ${payloadHit}` }
+      return { allowed: false, kind: 'blocked-pattern', reason: `参数包含禁止模式: ${payloadHit}` }
     }
 
     const scopeHit = this.matchScopeViolation(params)
     if (scopeHit) {
-      return { allowed: false, reason: this.scopeHint(scopeHit) }
+      return { allowed: false, kind: 'scope', reason: this.scopeHint(scopeHit) }
     }
 
     const now = Date.now()
@@ -123,13 +151,21 @@ export class SafetyGuard {
       this.timestamps.shift()
     }
     if (this.timestamps.length >= this.cfg.maxRequestsPerMinute) {
-      return { allowed: false, reason: `超过速率限制 (${this.cfg.maxRequestsPerMinute}/min)` }
+      return {
+        allowed: false,
+        kind: 'rate-limit',
+        reason: `超过速率限制 (${this.cfg.maxRequestsPerMinute}/min)`,
+      }
     }
     if (this.totalRequests >= this.cfg.maxTotalRequests) {
-      return { allowed: false, reason: `超过总请求数限制 (${this.cfg.maxTotalRequests})` }
+      return {
+        allowed: false,
+        kind: 'total-limit',
+        reason: `超过总请求数限制 (${this.cfg.maxTotalRequests})`,
+      }
     }
 
-    return { allowed: true, reason: 'ok' }
+    return { allowed: true, kind: 'ok', reason: 'ok' }
   }
 
   private matchBlockedPattern(params: unknown): string | null {

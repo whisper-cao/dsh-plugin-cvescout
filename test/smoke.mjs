@@ -12,11 +12,20 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { resolveConfig } from '../lib/config.js'
-import { SafetyGuard } from '../lib/core/safety.js'
+import { SafetyGuard, SafetyBlockedError } from '../lib/core/safety.js'
+import { emptyTlsIntel } from '../lib/core/tls.js'
 import { hasExplicitScheme, hostOf, resolveTargetInput, swapScheme } from '../lib/core/url.js'
 import { buildGuidanceText } from '../lib/prompt.js'
 import { IntelCache } from '../lib/core/cache.js'
-import { IntelJudge, compareVersions, isVersionInRange, findIntelComponent } from '../lib/core/judge.js'
+import {
+  IntelJudge,
+  assessHttp2Precondition,
+  compareVersions,
+  findIntelComponent,
+  isVersionInRange,
+  requiresHttp2,
+} from '../lib/core/judge.js'
+import { extractProtocolHints } from '../lib/sources/fingerprint.js'
 import {
   parseReproDoc,
   parseReproJson,
@@ -418,6 +427,214 @@ check('未配置白名单时，指引会明确提醒补配置', () => {
   const text = buildGuidanceText({ cfg, safety: new SafetyGuard(cfg) })
   assert.match(text, /未配置授权域名白名单/)
   assert.match(text, /targetAliases/)
+})
+
+console.log('\n协议前置条件（HTTP/2）')
+
+/** 构造一份最小可用的目标情报。 */
+function makeIntel(overrides = {}) {
+  return {
+    targetUrl: 'https://portal.example.com',
+    server: 'nginx/1.18.0',
+    framework: null,
+    techStack: [{ name: 'Nginx', version: '1.18.0', category: 'server', confidence: 0.9 }],
+    wafDetected: false,
+    wafVendor: null,
+    lastScanned: new Date().toISOString(),
+    scanStatus: 'complete',
+    scanDurationMs: 1,
+    allowedMethods: [],
+    errorPageSignature: null,
+    tls: null,
+    protocolHints: null,
+    ...overrides,
+  }
+}
+
+/** 构造一份 TLS 探测结果。 */
+function tlsStub({ ok = true, http2 = false, alpn = 'http/1.1' } = {}) {
+  const base = emptyTlsIntel(null)
+  const negotiated = alpn !== null
+  return {
+    ...base,
+    ok,
+    alpnProtocol: alpn,
+    alpnNegotiated: negotiated,
+    http2,
+    http2Evidence: http2
+      ? 'ALPN 协商为 h2，该入口提供 HTTP/2 over TLS'
+      : negotiated
+        ? `ALPN 协商为 ${alpn}，未提供 h2，该入口不支持 HTTP/2 over TLS`
+        : '服务器未在 ALPN 中选中任何协议，该入口不支持 HTTP/2 over TLS',
+  }
+}
+
+const cve44487 = {
+  cveId: 'CVE-2023-44487',
+  description: 'HTTP/2 Rapid Reset 可导致拒绝服务',
+  cvssScore: 7.5,
+  severity: 'HIGH',
+  affectedProducts: [
+    {
+      component: 'nginx',
+      versionStart: null,
+      versionEnd: '1.25.3',
+      versionEndInclusive: false,
+      criteria: null,
+      ecosystem: null,
+    },
+  ],
+  references: [],
+  source: 'test',
+}
+
+check('已知 HTTP/2 条目被识别为需要该前置条件', () => {
+  const result = requiresHttp2(cve44487)
+  assert.equal(result.required, true)
+  assert.ok(result.basis)
+})
+
+check('与本协议无关的 CVE 不会被误判为需要 HTTP/2', () => {
+  assert.equal(
+    requiresHttp2({ ...cve44487, cveId: 'CVE-2021-44228', description: 'Log4j2 JNDI 注入' }).required,
+    false,
+  )
+})
+
+check('描述同时含 HTTP/2 与拒绝服务语义时按需要 HTTP/2 处理', () => {
+  const cve = { ...cve44487, cveId: 'CVE-2099-0001', description: 'HTTP/2 CONTINUATION flood causes denial of service' }
+  assert.equal(requiresHttp2(cve).required, true)
+})
+
+check('仅提到 HTTP/2 但不涉及拒绝服务时，不按需要 HTTP/2 处理', () => {
+  const cve = { ...cve44487, cveId: 'CVE-2099-0002', description: 'HTTP/2 请求解析越界可导致信息泄露' }
+  assert.equal(requiresHttp2(cve).required, false)
+})
+
+check('ALPN 未协商出 h2 → 前置条件证伪', () => {
+  const precondition = assessHttp2Precondition(cve44487, makeIntel({ tls: tlsStub({ http2: false }) }))
+  assert.equal(precondition.status, 'violated')
+  assert.match(precondition.detail, /不支持 HTTP\/2 over TLS/)
+})
+
+check('ALPN 协商出 h2 → 前置条件满足', () => {
+  const precondition = assessHttp2Precondition(cve44487, makeIntel({ tls: tlsStub({ http2: true, alpn: 'h2' }) }))
+  assert.equal(precondition.status, 'satisfied')
+})
+
+check('Alt-Svc 广告 h2 也能证明前置条件满足', () => {
+  const intel = makeIntel({
+    tls: null,
+    protocolHints: { altSvc: 'h3=":443"; h2=":443"', http2Advertised: true, viaProxy: null },
+  })
+  assert.equal(assessHttp2Precondition(cve44487, intel).status, 'satisfied')
+})
+
+check('没有 TLS 情报（旧缓存）→ 前置条件未知，而不是「不支持」', () => {
+  const precondition = assessHttp2Precondition(cve44487, makeIntel({ tls: null, protocolHints: null }))
+  assert.equal(precondition.status, 'unknown')
+})
+
+check('协议能力未知时不得据此排除', () => {
+  const judgment = new IntelJudge().judge(cve44487, makeIntel({ tls: null, protocolHints: null }))
+  assert.equal(judgment.applicable, 'yes', '未知不等于不支持，版本命中区间应判适用')
+  assert.match(judgment.reason, /协议能力未知/)
+})
+
+check('版本命中但实测不支持 HTTP/2 → 判为不适用（protocol 依据）', () => {
+  const judgment = new IntelJudge().judge(
+    cve44487,
+    makeIntel({ tls: tlsStub({ http2: false }), protocolHints: { altSvc: null, http2Advertised: false, viaProxy: null } }),
+  )
+  assert.equal(judgment.applicable, 'no')
+  assert.equal(judgment.exclusionBasis, 'protocol')
+  assert.equal(judgment.skipRecon, true)
+  assert.match(judgment.reason, /协议前置条件/)
+})
+
+check('版本明确落在区间外时，仍以版本为依据（不被协议结论覆盖）', () => {
+  const intel = makeIntel({
+    server: 'nginx/1.26.0',
+    techStack: [{ name: 'Nginx', version: '1.26.0', category: 'server', confidence: 0.9 }],
+    tls: tlsStub({ http2: true, alpn: 'h2' }),
+  })
+  const judgment = new IntelJudge().judge(cve44487, intel)
+  assert.equal(judgment.applicable, 'no')
+  assert.equal(judgment.exclusionBasis, 'version')
+})
+
+check('Alt-Svc 解析：识别 h2 广告与前置代理', () => {
+  const hints = extractProtocolHints({
+    'alt-svc': 'h3=":443"; ma=86400, h2=":443"',
+    via: '1.1 uproxy-2',
+  })
+  assert.equal(hints.http2Advertised, true)
+  assert.equal(hints.viaProxy, '1.1 uproxy-2')
+
+  const none = extractProtocolHints({ via: '1.1 squid' })
+  assert.equal(none.http2Advertised, false)
+  assert.equal(none.altSvc, null)
+})
+
+check('h3 单独出现时不会被误判为 h2', () => {
+  assert.equal(extractProtocolHints({ 'alt-svc': 'h3=":443"; ma=86400' }).http2Advertised, false)
+})
+
+check('emptyTlsIntel 的默认语义是「未探测」而不是「不支持 HTTP/2」', () => {
+  const empty = emptyTlsIntel('未执行')
+  assert.equal(empty.ok, false)
+  assert.equal(empty.http2, false)
+  assert.match(empty.http2Evidence, /未完成|未执行/)
+})
+
+console.log('\n配置与护栏的增量字段')
+
+check('新增 tlsProbe / probeConcurrency 有安全默认值', () => {
+  const cfg = resolveConfig({})
+  assert.equal(cfg.tlsProbe, true)
+  assert.equal(cfg.probeConcurrency, 6)
+})
+
+check('probeConcurrency 被夹在 1..32 之间', () => {
+  assert.equal(resolveConfig({ probeConcurrency: 0 }).probeConcurrency, 1)
+  assert.equal(resolveConfig({ probeConcurrency: 999 }).probeConcurrency, 32)
+  assert.equal(resolveConfig({ probeConcurrency: 3.6 }).probeConcurrency, 4)
+})
+
+check('护栏区分「越权」与「配额用尽」，便于并行探测分而治之', () => {
+  const cfg = resolveConfig({ allowedDomains: ['example.com'], maxRequestsPerMinute: 1 })
+  const guard = new SafetyGuard(cfg)
+
+  const scoped = guard.check('http_probe', { url: 'https://other.example.net/' })
+  assert.equal(scoped.allowed, false)
+  assert.equal(scoped.kind, 'scope')
+
+  assert.equal(guard.check('http_probe', { url: 'https://example.com/' }).allowed, true)
+  const limited = guard.check('http_probe', { url: 'https://example.com/' })
+  assert.equal(limited.allowed, false)
+  assert.equal(limited.kind, 'rate-limit')
+})
+
+check('只有越权类拦截会标记为必须硬失败', () => {
+  const cfg = resolveConfig({ allowedDomains: ['example.com'], maxRequestsPerMinute: 1 })
+  const guard = new SafetyGuard(cfg)
+
+  try {
+    guard.assertAllowed('http_probe', { url: 'https://not-allowed.example.net/' })
+    assert.fail('越权目标应抛错')
+  } catch (error) {
+    assert.ok(error instanceof SafetyBlockedError)
+    assert.equal(error.isScopeViolation, true)
+  }
+
+  guard.check('http_probe', { url: 'https://example.com/' })
+  try {
+    guard.assertAllowed('http_probe', { url: 'https://example.com/' })
+    assert.fail('超速应抛错')
+  } catch (error) {
+    assert.ok(error instanceof SafetyBlockedError)
+    assert.equal(error.isScopeViolation, false, '配额类拦截不应被当作越权硬失败')
+  }
 })
 
 console.log(`\n全部 ${passed} 项冒烟测试通过`)

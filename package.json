@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-cvescout",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DeepSeek Harness plugin for CVE impact retesting: fingerprint a target, judge it against a CVE's affected range, gather passive evidence, and report a verdict with confidence and limitations.",
   "license": "MIT",
   "type": "module",

@@ -63,6 +63,7 @@ export function registerPipelineTools(ctx: Context, runtime: CvescoutRuntime): v
       description:
         '【CVE 复测主入口】当用户说「某网站/系统涉及某个 CVE，帮我排查/验证/确认是否受影响/复测一下」时，优先用本工具。它会自动完成：取或复用目标指纹情报 → 拉取 CVE 受影响组件与版本区间 → 静态判读 → 必要时被动探测取证 → 输出 VULNERABLE / NOT_VULNERABLE / UNCERTAIN、置信度、依据与限制说明。' +
         '若用户在 CVE 编号里给了多个（逗号分隔），会自动转成批量复测。可选传入复现文档以执行其中的非破坏性步骤；只有取得正向证据才会给出 VULNERABLE。' +
+        '判读会在版本区间之上叠加**协议前置条件**：对 HTTP/2 Rapid Reset 一类「必须启用 HTTP/2 才能触发」的 CVE，会先做一次裸 TLS 握手确认 HTTP/2 是否可用，实测不可用即直接排除（这类排除依据记为 protocol）。' +
         '本工具不投递攻击载荷、不写入目标数据；目标不在授权范围时会直接被拦截并说明如何补充配置。',
       parameters: {
         url: { type: 'string', required: true, description: TARGET_PARAM_DESCRIPTION },

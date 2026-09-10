@@ -20,6 +20,57 @@ export type TechComponent = {
 /** 目标情报采集状态。 */
 export type ScanStatus = 'complete' | 'partial' | 'failed'
 
+/** 对端证书事实（仅记录，不做信任判定）。 */
+export type TlsCertificateIntel = {
+  subject: string | null
+  issuer: string | null
+  validFrom: string | null
+  validTo: string | null
+  /** 距过期天数；已过期为负数。 */
+  daysUntilExpiry: number | null
+  altNames: string[]
+  /** 公钥长度（RSA 位数 / EC 曲线位数），拿不到为 null。 */
+  keyBits: number | null
+  serialNumber: string | null
+  fingerprint256: string | null
+}
+
+/**
+ * TLS 握手探测结果。
+ *
+ * `http2` 是最关键的一位：由 ALPN 是否协商出 `h2` 决定，用于排除
+ * 「仅 HTTP/2 可触发」的一类 CVE。
+ */
+export type TlsIntel = {
+  /** 握手是否成功完成。 */
+  ok: boolean
+  error: string | null
+  /** 协商出的 TLS 版本，如 TLSv1.3。 */
+  protocol: string | null
+  cipher: string | null
+  /** ALPN 协商结果：'h2' / 'http/1.1'；服务器未选中任何协议时为 null。 */
+  alpnProtocol: string | null
+  alpnNegotiated: boolean
+  /** HTTP/2 over TLS 是否可用。 */
+  http2: boolean
+  /** 得出 http2 结论的依据，直接写进报告。 */
+  http2Evidence: string
+  certificate: TlsCertificateIntel | null
+  /** 证书链是否被本机信任（自签/内网 CA 为 false，本身不代表漏洞）。 */
+  certTrusted: boolean | null
+  elapsedMs: number
+}
+
+/** 与协议能力相关的 HTTP 层线索。 */
+export type ProtocolHints = {
+  /** `Alt-Svc` 响应头原文。 */
+  altSvc: string | null
+  /** `Alt-Svc` 是否广告了 h2 服务。 */
+  http2Advertised: boolean
+  /** `Via` 响应头，提示前置代理。 */
+  viaProxy: string | null
+}
+
 /** 目标情报。 */
 export type TargetIntel = {
   targetUrl: string
@@ -35,6 +86,13 @@ export type TargetIntel = {
   allowedMethods: string[]
   /** 随机路径 404 页面的特征片段，用于判断 SPA/框架错误页。 */
   errorPageSignature: string | null
+  /**
+   * TLS / ALPN 探测结果。旧版本写入的情报缓存里没有这个字段，因此可空，
+   * 判读时必须容忍 `undefined`（视为「协议能力未知」而不是「不支持」）。
+   */
+  tls?: TlsIntel | null
+  /** HTTP 层协议线索（Alt-Svc / Via）。同样兼容旧缓存。 */
+  protocolHints?: ProtocolHints | null
 }
 
 /** 归一化后的受影响产品条目（NVD 与 GitHub Advisory 统一到同一形状）。 */
@@ -103,6 +161,13 @@ export type Judgment = {
   matchedComponent: string | null
   targetVersion: string | null
   range: VersionRange | null
+  /**
+   * 给出 `applicable: 'no'` 时的依据来源：
+   *  - `version`：目标组件版本明确落在受影响区间之外；
+   *  - `protocol`：版本可能命中，但目标不满足该 CVE 的协议前置条件（如未启用 HTTP/2）。
+   * 其余情况为 null。
+   */
+  exclusionBasis?: 'version' | 'protocol' | null
 }
 
 /** 单次被动探测的证据。 */
@@ -136,6 +201,9 @@ export type RetestResult = {
     lastScanned: string
     server: string | null
     waf: string | null
+    /** 目标的 TLS / 协议能力事实，便于人工复核「前置条件是否成立」。 */
+    tls: TlsIntel | null
+    protocolHints: ProtocolHints | null
   }
   evidence: ProbeEvidence[]
   pentest: PentestSummary | null
