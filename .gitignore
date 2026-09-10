@@ -7,10 +7,12 @@ node_modules/
 .smoke-cache.json
 *.log
 
-# 本地配置（可能含 NVD Key / GitHub Token）
+# 本地配置（可能含 NVD Key / GitHub Token / npm token）
 .env
 .env.local
 cordis.local.yml
+.npmrc
+.npmrc.local
 
 # 系统噪声
 .DS_Store
