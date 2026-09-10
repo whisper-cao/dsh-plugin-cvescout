@@ -346,7 +346,13 @@ npm run check:dist    # 校验 lib/ 与 src/ 同步——提交前跑，CI 也�
 node test/smoke.mjs && node test/register.mjs
 node test/e2e-local.mjs
 npx tsc --noEmit
+
+# check:dist 的等价写法：先构建，再看 lib/ 有无 diff
+npx tsc -p tsconfig.build.json && git diff --exit-code -- lib
 ```
+
+> 个别 Windows + Git Bash 环境下 `npm run <script>` 会返回非零退出码而实际命令已成功执行
+> （脚本输出里看不到任何错误）。判断是否真的失败，以上面这类直接调用为准。
 
 ### 维护者：发版流程
 
