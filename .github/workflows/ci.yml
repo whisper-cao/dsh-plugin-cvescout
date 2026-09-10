@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: build-and-test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 与 package.json 的 engines 保持一致：Harness 自身要求 ^22.19.0 || >=24.0.0
+        node: ['22.x', '24.x']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      # 关键守卫：仓库里提交了构建产物 lib/，这里确认它与 src/ 同步。
+      # 忘了跑 npm run build 就提交时，这一步会红。
+      - name: 校验 lib/ 与 src/ 是否同步
+        run: |
+          npm run build
+          if ! git diff --exit-code -- lib; then
+            echo "::error::lib/ 与 src/ 不同步。请在本地执行 npm run build 并把产物一起提交。"
+            exit 1
+          fi
+          echo "lib/ 与 src/ 一致"
+
+      # 注意：这里直接跑 node 而不是 npm test，避免 pretest 重新构建后
+      # 让上面的同步校验失去意义。
+      - name: 离线测试（纯逻辑 + 入口 apply 冒烟）
+        run: |
+          node test/smoke.mjs
+          node test/register.mjs
+
+      - name: 端到端测试（本地 127.0.0.1 靶机，不触碰外部站点）
+        run: node test/e2e-local.mjs
+
+      - name: 打包内容检查
+        run: npm pack --dry-run

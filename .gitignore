@@ -1,0 +1,17 @@
+# 依赖与构建产物
+node_modules/
+*.tsbuildinfo
+*.tgz
+
+# 测试与运行期产物
+.smoke-cache.json
+*.log
+
+# 本地配置（可能含 NVD Key / GitHub Token）
+.env
+.env.local
+cordis.local.yml
+
+# 系统噪声
+.DS_Store
+Thumbs.db

@@ -1,0 +1,29 @@
+# 开发用 patch 层：直接从源码加载插件，改完 .ts 立即生效，不需要构建。
+#
+#   cd /path/to/deepseek-harness
+#   pnpm dsh web --patch /path/to/dsh-plugin-cvescout/cordis.dev.patch.yml
+#
+# 与仓库根的 cordis.patch.yml（按包名引用 lib/index.js，供已安装的组合包使用）不同，
+# 这一份按**源码绝对路径**引用 src/index.ts——Harness 的加载器能直接剥离类型加载 .ts，
+# 所以开发期可以跳过 `npm run build`。
+#
+# name 必须是绝对路径：相对路径只会在加载器所在的 profile 目录下解析。
+- insert:
+    - id: cvescout-dev
+      name: '/absolute/path/to/dsh-plugin-cvescout/src/index.ts'
+      config:
+        allowedDomains:
+          - example.com
+        targetAliases:
+          内部管理系统: erp.example.com
+        defaultScheme: https
+        allowSchemeFallback: true
+        maxRequestsPerMinute: 30
+        maxTotalRequests: 200
+        cacheTtlHours: 24
+        allowNonIdempotentProbe: false
+        probeAllowedMethods: true
+        errorPageProbe: true
+        passiveProbePaths:
+          - /robots.txt
+          - /.well-known/security.txt

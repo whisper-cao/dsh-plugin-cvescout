@@ -1,0 +1,71 @@
+# dsh-plugin-cvescout 的组合包 patch 层。
+#
+# 这份 patch 会被任何列出本组合包的 profile 应用。插件行**按包名**引用，这样
+# Node 的模块解析才能从 profile 的 node_modules 里找到已安装的代码
+# （入口是 package.json 的 main: lib/index.js）——不要在这里写本地路径。
+#
+# 安装方式见 README：
+#   dsh plugin --profile web add github:whisper-cao/dsh-plugin-cvescout
+#
+# 改完配置后可用 `dsh --profile web --dump-config` 确认本层已生效。
+- insert:
+    - id: cvescout
+      name: dsh-plugin-cvescout
+      config:
+        # === 授权范围：填你已获授权测试的目标 ===
+        # 留空 = 不限制目标（不建议；插件会在启动日志和 target_scope 里告警）。
+        # 匹配规则：主机名精确匹配，或作为后缀匹配子域——
+        #   填 example.com 即可覆盖 portal.example.com、erp.example.com 等子域。
+        allowedDomains:
+          - example.com
+
+        # === 系统别名：用户口中的名字 → 实际目标 ===
+        # 用户可能只说「内部管理系统」，靠这张表把名字落到域名上（target_scope 工具会读它）。
+        targetAliases:
+          内部管理系统: erp.example.com
+          对外门户: portal.example.com
+
+        # === 目标地址解析 ===
+        # 用户只给域名时补的协议；连接/TLS 失败时是否自动换协议重试一次（仅被动方法）。
+        defaultScheme: https
+        allowSchemeFallback: true
+
+        # === 速率与总量双限，防止误跑把授权站点打爆 ===
+        maxRequestsPerMinute: 30
+        maxTotalRequests: 200
+        timeoutMs: 10000
+
+        # === 上下文卫生：回给模型的响应体预览上限（字节） ===
+        maxResponseBytes: 20000
+
+        # === 情报源凭证：留空则走匿名限额 ===
+        # NVD:    带 Key 后 50 次/30 秒（匿名 5 次/30 秒）
+        # GitHub: 也可改用环境变量 GITHUB_TOKEN
+        nvdApiKey: ''
+        githubToken: ''
+
+        # === 红线开关：默认只放行 GET/HEAD/OPTIONS ===
+        # 开启后允许 POST/PUT/PATCH/DELETE 探测（例如对随机无害文件名发空 body 的 PUT，
+        # 用于判断写入路径是否可达）。开启前请确认已获得书面授权。
+        allowNonIdempotentProbe: false
+
+        # === 情报缓存与报告 ===
+        cachePath: ''            # 留空 -> ~/.cvescout/intel-cache.json
+        cacheTtlHours: 24
+        reportDir: ''            # 留空 -> ~/.cvescout/reports
+
+        # === 指纹探测范围（全部为被动请求） ===
+        probeAllowedMethods: true
+        errorPageProbe: true
+        passiveProbePaths:
+          - /robots.txt
+          - /.well-known/security.txt
+
+        # === 载荷黑名单：命中即拦截。如需放宽，请在此处覆写整个列表 ===
+        # 注意 patch 会整体替换该行的 config，覆写时请把上面的键一并重述。
+        # blockedPayloadPatterns:
+        #   - 'rm\s+-rf'
+        #   - 'DROP\s+TABLE'
+#
+# 已安装本组合包的 profile 也可以用自己 profile 目录下的 cordis.patch.yml
+# 按同一个 id（cvescout）覆盖上面的任意配置，不必改动本文件。
