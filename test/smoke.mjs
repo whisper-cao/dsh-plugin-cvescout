@@ -420,6 +420,11 @@ check('指引文本包含触发话术、流程与当前授权范围', () => {
   assert.match(text, /portal\.example\.com、erp\.example\.com/)
   assert.match(text, /内部管理系统 → erp\.example\.com/)
   assert.match(text, /不投递攻击载荷/)
+  // 与安全测试方法论类技能的分工：必须明确「先调本插件取实证，不要先加载方法论技能」，
+  // 否则模型容易被 skill 目录里的 TRIGGER 话术带走。
+  assert.match(text, /与其它安全技能的分工/)
+  assert.match(text, /不要先加载方法论类技能/)
+  assert.match(text, /不产出「某目标是否受某 CVE 影响」的判定结论/)
 })
 
 check('未配置白名单时，指引会明确提醒补配置', () => {
